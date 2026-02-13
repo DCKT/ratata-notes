@@ -1,5 +1,7 @@
 # ratata-notes
 
+Notes are stored through sqlite using [rusqlite](https://github.com/rusqlite/rusqlite).
+
 <img width="1389" height="659" alt="image" src="https://github.com/user-attachments/assets/d7f3e921-aac1-4a9e-8446-604cc04a6104" />
 
 
