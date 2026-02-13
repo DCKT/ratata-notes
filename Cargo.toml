@@ -10,7 +10,9 @@ edition = "2024"
 color-eyre = "0.6.3"
 crossterm = "0.29.0"
 ratatui = "0.30.0"
-tui-textarea = "0.7.0"
+tui-input = "0.15.0"
+rusqlite = { version = "0.38.0", features = ["bundled"] }
+
 
 # Read the optimization guideline for more details: https://ratatui.rs/recipes/apps/release-your-app/#optimizations
 [profile.release]
