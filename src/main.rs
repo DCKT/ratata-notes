@@ -1,7 +1,7 @@
 mod db;
 mod models;
 
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout},
@@ -37,6 +37,7 @@ fn main() -> color_eyre::Result<()> {
         title_input: Input::default(),
         content_input: Input::default(),
         focused_input: FocusedInput::Title,
+        should_quit: false,
     };
     ratatui::run(|t| app.run(t))?;
 
@@ -46,11 +47,37 @@ fn main() -> color_eyre::Result<()> {
 enum Screen {
     List,
     Form,
+    ExitConfirm,
 }
 
 enum FocusedInput {
     Title,
     Content,
+}
+enum ListAction {
+    MoveUp,
+    MoveDown,
+    AddNote,
+    SelectNote,
+    DeleteNote,
+    Quit,
+}
+enum FormAction {
+    Save,
+    ToggleInput,
+    UpdateInput(Event),
+    Exit,
+}
+
+enum ExitAction {
+    Confirm,
+    Cancel,
+}
+
+enum Action {
+    List(ListAction),
+    Form(FormAction),
+    Exit(ExitAction),
 }
 
 struct App {
@@ -60,72 +87,27 @@ struct App {
     title_input: Input,
     content_input: Input,
     focused_input: FocusedInput,
+    should_quit: bool,
 }
 
 impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
-        loop {
-            terminal.draw(|f| self.draw(f))?;
+        while !self.should_quit {
+            terminal.draw(|f| self.render(f))?;
             let event = crossterm::event::read()?;
 
             if let crossterm::event::Event::Key(key) = event {
-                match self.current_screen {
-                    Screen::List => match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            return Ok(());
-                        }
-                        KeyCode::Char('j') | KeyCode::Down => {
-                            self.notes.state.select_next();
-                        }
-                        KeyCode::Char('k') | KeyCode::Up => {
-                            self.notes.state.select_previous();
-                        }
-                        KeyCode::Enter | KeyCode::Char('e') => {
-                            self.current_screen = Screen::Form;
-                            if let Some(index) = self.notes.state.selected() {
-                                let current_note = self.notes.items[index].clone();
-                                self.title_input =
-                                    self.title_input.clone().with_value(current_note.title);
-                                self.content_input =
-                                    self.content_input.clone().with_value(current_note.content);
-                            }
-                        }
-                        KeyCode::Char('a') | KeyCode::Char('i') => {
-                            self.add_note();
-                            self.title_input.reset();
-                            self.content_input.reset();
-                            self.current_screen = Screen::Form;
-                        }
-                        KeyCode::Char('d') => {
-                            self.delete_note();
-                        }
-                        _ => {}
-                    },
-                    Screen::Form => match (key.modifiers, key.code) {
-                        (KeyModifiers::CONTROL, KeyCode::Char('s')) => {
-                            self.save_note();
-                        }
-                        (_, KeyCode::Tab) => {
-                            self.toggle_input();
-                        }
-                        (_, KeyCode::Esc) => self.current_screen = Screen::List,
-                        _ => {
-                            match self.focused_input {
-                                FocusedInput::Title => {
-                                    self.title_input.handle_event(&event);
-                                }
-                                FocusedInput::Content => {
-                                    self.content_input.handle_event(&event);
-                                }
-                            };
-                        }
-                    },
+                let mut action = self.handle_key(key, event);
+
+                while action.is_some() {
+                    action = self.handle_action(action.unwrap());
                 }
             }
         }
+        Ok(())
     }
 
-    fn draw(&mut self, frame: &mut Frame) {
+    fn render(&mut self, frame: &mut Frame) {
         match self.current_screen {
             Screen::List => {
                 self.render_list(frame);
@@ -133,7 +115,95 @@ impl App {
             Screen::Form => {
                 self.render_form(frame);
             }
+            Screen::ExitConfirm => {
+                self.render_exit(frame);
+            }
         }
+    }
+
+    fn handle_key(&mut self, key: event::KeyEvent, event: Event) -> Option<Action> {
+        match self.current_screen {
+            Screen::List => match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => Some(Action::List(ListAction::Quit)),
+                KeyCode::Char('j') | KeyCode::Down => Some(Action::List(ListAction::MoveDown)),
+                KeyCode::Char('k') | KeyCode::Up => Some(Action::List(ListAction::MoveUp)),
+                KeyCode::Enter | KeyCode::Char('e') => Some(Action::List(ListAction::SelectNote)),
+                KeyCode::Char('a') | KeyCode::Char('i') => Some(Action::List(ListAction::AddNote)),
+                KeyCode::Char('d') => Some(Action::List(ListAction::DeleteNote)),
+                _ => None,
+            },
+            Screen::Form => match (key.modifiers, key.code) {
+                (KeyModifiers::CONTROL, KeyCode::Char('s')) => Some(Action::Form(FormAction::Save)),
+                (_, KeyCode::Tab) => Some(Action::Form(FormAction::ToggleInput)),
+                (_, KeyCode::Esc) => Some(Action::Form(FormAction::Exit)),
+                _ => Some(Action::Form(FormAction::UpdateInput(event))),
+            },
+            Screen::ExitConfirm => match key.code {
+                KeyCode::Esc => Some(Action::Exit(ExitAction::Cancel)),
+                KeyCode::Char('q') => Some(Action::Exit(ExitAction::Confirm)),
+                _ => None,
+            },
+        }
+    }
+
+    fn handle_action(&mut self, action: Action) -> Option<Action> {
+        match action {
+            Action::List(list_action) => match list_action {
+                ListAction::Quit => {
+                    self.current_screen = Screen::ExitConfirm;
+                }
+                ListAction::MoveUp => {
+                    self.notes.state.select_previous();
+                }
+                ListAction::MoveDown => {
+                    self.notes.state.select_next();
+                }
+                ListAction::AddNote => {
+                    self.add_note();
+                    self.title_input.reset();
+                    self.content_input.reset();
+                    self.current_screen = Screen::Form;
+                }
+                ListAction::DeleteNote => {
+                    self.delete_note();
+                }
+                ListAction::SelectNote => {
+                    self.current_screen = Screen::Form;
+                    if let Some(index) = self.notes.state.selected() {
+                        let current_note = self.notes.items[index].clone();
+                        self.title_input = self.title_input.clone().with_value(current_note.title);
+                        self.content_input =
+                            self.content_input.clone().with_value(current_note.content);
+                    }
+                }
+            },
+            Action::Form(form_action) => match form_action {
+                FormAction::Save => {
+                    self.save_note();
+                }
+                FormAction::ToggleInput => {
+                    self.toggle_input();
+                }
+                FormAction::UpdateInput(event) => {
+                    match self.focused_input {
+                        FocusedInput::Title => {
+                            self.title_input.handle_event(&event);
+                        }
+                        FocusedInput::Content => {
+                            self.content_input.handle_event(&event);
+                        }
+                    };
+                }
+                FormAction::Exit => {
+                    self.current_screen = Screen::List;
+                }
+            },
+            Action::Exit(exit_action) => match exit_action {
+                ExitAction::Confirm => self.should_quit = true,
+                ExitAction::Cancel => self.current_screen = Screen::List,
+            },
+        }
+        None
     }
 
     fn render_list(&mut self, frame: &mut Frame) {
@@ -244,6 +314,25 @@ impl App {
         frame.render_widget(content_input.block(content_block), inner_content_layout[0]);
         frame.render_widget(help_message, inner_content_layout[1]);
     }
+    fn render_exit(&self, frame: &mut Frame) {
+        let layout = Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints(vec![Constraint::Max(2), Constraint::Max(2)])
+            .split(frame.area());
+
+        let help_message = Line::from_iter([
+            "y".bold().yellow(),
+            " Yes, ".to_span(),
+            "n".bold().yellow(),
+            " No, ".to_span(),
+        ])
+        .centered();
+
+        let title = Paragraph::new("Wanna quit ?").style(Style::default().bold());
+
+        frame.render_widget(title, layout[0]);
+        frame.render_widget(help_message, layout[1]);
+    }
 
     fn save_note(&mut self) {
         if let Some(selected_index) = self.notes.state.selected() {
@@ -258,7 +347,6 @@ impl App {
             self.notes.items[selected_index] = updated_note;
         }
     }
-
     fn toggle_input(&mut self) {
         self.focused_input = match self.focused_input {
             FocusedInput::Title => FocusedInput::Content,
