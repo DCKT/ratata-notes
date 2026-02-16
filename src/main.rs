@@ -8,11 +8,40 @@ use ratatui::{
     style::{Style, Stylize},
     symbols::border,
     text::{Line, ToSpan},
-    widgets::{Block, List, ListItem, Paragraph},
+    widgets::{Block, List, ListState, Paragraph},
 };
 use tui_input::{Input, backend::crossterm::EventHandler};
 
-use crate::{db::Database, models::Note};
+use crate::{
+    db::Database,
+    models::{Note, NoteList},
+};
+
+fn main() -> color_eyre::Result<()> {
+    color_eyre::install()?;
+    let db = Database::new("notes.db")?;
+    let notes = db.get_all_notes()?;
+    let mut list_state = ListState::default();
+
+    if !notes.is_empty() {
+        list_state.select(Some(0));
+    }
+
+    let mut app = App {
+        notes: NoteList {
+            items: notes,
+            state: list_state,
+        },
+        db,
+        current_screen: Screen::List,
+        title_input: Input::default(),
+        content_input: Input::default(),
+        focused_input: FocusedInput::Title,
+    };
+    ratatui::run(|t| app.run(t))?;
+
+    Ok(())
+}
 
 enum Screen {
     List,
@@ -26,30 +55,11 @@ enum FocusedInput {
 
 struct App {
     db: Database,
-    notes: Vec<Note>,
+    notes: NoteList,
     current_screen: Screen,
-    list_index: usize,
     title_input: Input,
     content_input: Input,
     focused_input: FocusedInput,
-}
-
-fn main() -> color_eyre::Result<()> {
-    color_eyre::install()?;
-    let db = Database::new("notes.db")?;
-    let notes = db.get_all_notes()?;
-    let mut app = App {
-        notes,
-        db,
-        list_index: 0,
-        current_screen: Screen::List,
-        title_input: Input::default(),
-        content_input: Input::default(),
-        focused_input: FocusedInput::Title,
-    };
-    ratatui::run(|t| app.run(t))?;
-
-    Ok(())
 }
 
 impl App {
@@ -65,28 +75,22 @@ impl App {
                             return Ok(());
                         }
                         KeyCode::Char('j') | KeyCode::Down => {
-                            if self.list_index == self.notes.len() - 1 {
-                                self.list_index = 0;
-                            } else {
-                                self.list_index += 1;
-                            }
+                            self.notes.state.select_next();
                         }
                         KeyCode::Char('k') | KeyCode::Up => {
-                            if self.list_index == 0 {
-                                self.list_index = self.notes.len() - 1;
-                            } else {
-                                self.list_index -= 1;
-                            }
+                            self.notes.state.select_previous();
                         }
                         KeyCode::Enter | KeyCode::Char('e') => {
                             self.current_screen = Screen::Form;
-                            let current_note = self.notes[self.list_index].clone();
-                            self.title_input =
-                                self.title_input.clone().with_value(current_note.title);
-                            self.content_input =
-                                self.content_input.clone().with_value(current_note.content);
+                            if let Some(index) = self.notes.state.selected() {
+                                let current_note = self.notes.items[index].clone();
+                                self.title_input =
+                                    self.title_input.clone().with_value(current_note.title);
+                                self.content_input =
+                                    self.content_input.clone().with_value(current_note.content);
+                            }
                         }
-                        KeyCode::Char('a') => {
+                        KeyCode::Char('a') | KeyCode::Char('i') => {
                             self.add_note();
                             self.title_input.reset();
                             self.content_input.reset();
@@ -121,7 +125,7 @@ impl App {
         }
     }
 
-    fn draw(&self, frame: &mut Frame) {
+    fn draw(&mut self, frame: &mut Frame) {
         match self.current_screen {
             Screen::List => {
                 self.render_list(frame);
@@ -130,6 +134,61 @@ impl App {
                 self.render_form(frame);
             }
         }
+    }
+
+    fn render_list(&mut self, frame: &mut Frame) {
+        let layout = Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints(vec![Constraint::Percentage(30), Constraint::Min(1)])
+            .split(frame.area());
+
+        let inner_list_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Min(1), Constraint::Length(1)])
+            .split(layout[0]);
+
+        let block = Block::bordered()
+            .title(Line::raw("My Notes").centered())
+            .border_set(border::THICK);
+
+        let notes_list_items = self
+            .notes
+            .items
+            .iter()
+            .map(|note| note.title.clone())
+            .collect::<List>()
+            .block(block)
+            .style(Style::new().white())
+            .highlight_style(Style::new().black().on_white())
+            .highlight_symbol(">>")
+            .direction(ratatui::widgets::ListDirection::TopToBottom);
+
+        let note_details = self
+            .notes
+            .state
+            .selected()
+            .and_then(|selected_index| self.notes.items.get(selected_index))
+            .map(|n| Paragraph::new(n.content.as_str()).block(Block::bordered()));
+
+        let help_message = Line::from_iter([
+            "Esc/q".bold().yellow(),
+            " exit, ".to_span(),
+            "e".bold().yellow(),
+            " edit, ".to_span(),
+            "a".bold().yellow(),
+            " add, ".to_span(),
+            "d".bold().red(),
+            " delete".to_span(),
+        ])
+        .centered();
+
+        frame.render_widget(help_message, inner_list_layout[1]);
+        frame.render_stateful_widget(
+            notes_list_items,
+            inner_list_layout[0],
+            &mut self.notes.state,
+        );
+        frame.render_widget(note_details, layout[1]);
     }
 
     fn render_form(&self, frame: &mut Frame) {
@@ -186,65 +245,18 @@ impl App {
         frame.render_widget(help_message, inner_content_layout[1]);
     }
 
-    fn render_list(&self, frame: &mut Frame) {
-        let layout = Layout::default()
-            .direction(ratatui::layout::Direction::Horizontal)
-            .constraints(vec![Constraint::Percentage(30), Constraint::Min(1)])
-            .split(frame.area());
-
-        let inner_list_layout = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Min(1), Constraint::Length(1)])
-            .split(layout[0]);
-
-        let block = Block::bordered()
-            .title("My Notes")
-            .border_set(border::THICK);
-
-        let notes_list_items = self.notes.iter().enumerate().map(|(i, note)| {
-            let item = ListItem::new(Line::from(note.title.as_str())).bold();
-
-            if i == self.list_index {
-                item.black().on_white()
-            } else {
-                item
-            }
-        });
-        let note_details = self
-            .notes
-            .get(self.list_index)
-            .map(|n| Paragraph::new(n.content.as_str()).block(Block::bordered()));
-
-        let help_message = Line::from_iter([
-            "Esc/q".bold().yellow(),
-            " exit, ".to_span(),
-            "e".bold().yellow(),
-            " edit, ".to_span(),
-            "a".bold().yellow(),
-            " add, ".to_span(),
-            "d".bold().red(),
-            " delete".to_span(),
-        ])
-        .centered();
-
-        frame.render_widget(help_message, inner_list_layout[1]);
-        frame.render_widget(
-            List::new(notes_list_items).block(block),
-            inner_list_layout[0],
-        );
-        frame.render_widget(note_details, layout[1]);
-    }
-
     fn save_note(&mut self) {
-        let updated_note = self
-            .db
-            .update_note(
-                self.notes[self.list_index].id,
-                self.title_input.value(),
-                self.content_input.value(),
-            )
-            .unwrap();
-        self.notes[self.list_index] = updated_note;
+        if let Some(selected_index) = self.notes.state.selected() {
+            let updated_note = self
+                .db
+                .update_note(
+                    self.notes.items[selected_index].id,
+                    self.title_input.value(),
+                    self.content_input.value(),
+                )
+                .unwrap();
+            self.notes.items[selected_index] = updated_note;
+        }
     }
 
     fn toggle_input(&mut self) {
@@ -255,14 +267,18 @@ impl App {
     }
     fn add_note(&mut self) {
         let new_note = self.db.add_note("New note", "").unwrap();
-        self.notes.push(new_note);
-        self.list_index = self.notes.len() - 1;
+        self.notes.items.push(new_note);
+        self.notes.state.select(Some(self.notes.items.len() - 1));
     }
     fn delete_note(&mut self) {
-        self.db.delete_note(self.notes[self.list_index].id).unwrap();
-        self.notes.remove(self.list_index);
-        if self.list_index != 0 {
-            self.list_index -= 1;
+        if let Some(selected_index) = self.notes.state.selected() {
+            self.db
+                .delete_note(self.notes.items[selected_index].id)
+                .unwrap();
+            self.notes.items.remove(selected_index);
+            if selected_index != 0 {
+                self.notes.state.select(Some(selected_index - 1));
+            }
         }
     }
 }
