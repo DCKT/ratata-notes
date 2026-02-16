@@ -139,8 +139,8 @@ impl App {
                 _ => Some(Action::Form(FormAction::UpdateInput(event))),
             },
             Screen::ExitConfirm => match key.code {
-                KeyCode::Esc => Some(Action::Exit(ExitAction::Cancel)),
-                KeyCode::Char('q') => Some(Action::Exit(ExitAction::Confirm)),
+                KeyCode::Esc | KeyCode::Char('n') => Some(Action::Exit(ExitAction::Cancel)),
+                KeyCode::Char('y') => Some(Action::Exit(ExitAction::Confirm)),
                 _ => None,
             },
         }
